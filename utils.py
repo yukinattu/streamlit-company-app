@@ -5,8 +5,6 @@
 ############################################################
 # ライブラリの読み込み
 ############################################################
-import os
-from dotenv import load_dotenv
 import streamlit as st
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.schema import HumanMessage
@@ -14,13 +12,6 @@ from langchain_openai import ChatOpenAI
 from langchain.chains import create_history_aware_retriever, create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 import constants as ct
-
-
-############################################################
-# 設定関連
-############################################################
-# 「.env」ファイルで定義した環境変数の読み込み
-load_dotenv()
 
 
 ############################################################
@@ -37,13 +28,9 @@ def get_source_icon(source):
     Returns:
         メッセージと一緒に表示するアイコンの種類
     """
-    # 参照元がWebページの場合とファイルの場合で、取得するアイコンの種類を変える
     if source.startswith("http"):
-        icon = ct.LINK_SOURCE_ICON
-    else:
-        icon = ct.DOC_SOURCE_ICON
-    
-    return icon
+        return ct.LINK_SOURCE_ICON
+    return ct.DOC_SOURCE_ICON
 
 
 def build_error_message(message):
@@ -69,48 +56,53 @@ def get_llm_response(chat_message):
     Returns:
         LLMからの回答
     """
-    # LLMのオブジェクトを用意
-    llm = ChatOpenAI(model_name=ct.MODEL, temperature=ct.TEMPERATURE)
-
-    # 会話履歴なしでもLLMに理解してもらえる、独立した入力テキストを取得するためのプロンプトテンプレートを作成
-    question_generator_template = ct.SYSTEM_PROMPT_CREATE_INDEPENDENT_TEXT
-    question_generator_prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", question_generator_template),
-            MessagesPlaceholder("chat_history"),
-            ("human", "{input}")
-        ]
+    # ✅ secretsからAPIキーを読み込む
+    llm = ChatOpenAI(
+        model_name=ct.MODEL,
+        temperature=ct.TEMPERATURE,
+        api_key=st.secrets["OPENAI_API_KEY"]
     )
 
-    # モードによってLLMから回答を取得する用のプロンプトを変更
+    # プロンプトテンプレート（ユーザー質問を独立文に）
+    question_generator_prompt = ChatPromptTemplate.from_messages([
+        ("system", ct.SYSTEM_PROMPT_CREATE_INDEPENDENT_TEXT),
+        MessagesPlaceholder("chat_history"),
+        ("human", "{input}")
+    ])
+
+    # 回答プロンプトテンプレート（モードにより分岐）
     if st.session_state.mode == ct.ANSWER_MODE_1:
-        # モードが「社内文書検索」の場合のプロンプト
         question_answer_template = ct.SYSTEM_PROMPT_DOC_SEARCH
     else:
-        # モードが「社内問い合わせ」の場合のプロンプト
         question_answer_template = ct.SYSTEM_PROMPT_INQUIRY
-    # LLMから回答を取得する用のプロンプトテンプレートを作成
-    question_answer_prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", question_answer_template),
-            MessagesPlaceholder("chat_history"),
-            ("human", "{input}")
-        ]
-    )
 
-    # 会話履歴なしでもLLMに理解してもらえる、独立した入力テキストを取得するためのRetrieverを作成
+    question_answer_prompt = ChatPromptTemplate.from_messages([
+        ("system", question_answer_template),
+        MessagesPlaceholder("chat_history"),
+        ("human", "{input}")
+    ])
+
+    # Retriever作成（履歴に基づく問い合わせ対応）
     history_aware_retriever = create_history_aware_retriever(
         llm, st.session_state.retriever, question_generator_prompt
     )
 
-    # LLMから回答を取得する用のChainを作成
+    # 回答Chain作成
     question_answer_chain = create_stuff_documents_chain(llm, question_answer_prompt)
-    # 「RAG x 会話履歴の記憶機能」を実現するためのChainを作成
+
+    # Retriever + Chain 統合
     chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
 
-    # LLMへのリクエストとレスポンス取得
-    llm_response = chain.invoke({"input": chat_message, "chat_history": st.session_state.chat_history})
-    # LLMレスポンスを会話履歴に追加
-    st.session_state.chat_history.extend([HumanMessage(content=chat_message), llm_response["answer"]])
+    # 実行してLLM応答を取得
+    llm_response = chain.invoke({
+        "input": chat_message,
+        "chat_history": st.session_state.chat_history
+    })
+
+    # 会話履歴に追加
+    st.session_state.chat_history.extend([
+        HumanMessage(content=chat_message),
+        llm_response["answer"]
+    ])
 
     return llm_response
